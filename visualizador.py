@@ -3,6 +3,8 @@ import psycopg2
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import zipfile
+import io
 
 # Configuración de conexión a PostgreSQL
 conexion = psycopg2.connect(
@@ -17,6 +19,63 @@ conexion = psycopg2.connect(
 def obtener_datos(query):
     return pd.read_sql(query, conexion)
 
+# Función para generar archivos CSV y comprimirlos en un ZIP
+def crear_zip_con_datos(dfs, nombres_archivos):
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        for df, nombre in zip(dfs, nombres_archivos):
+            csv_buffer = io.StringIO()
+            df.to_csv(csv_buffer, index=False)
+            zip_file.writestr(f"{nombre}.csv", csv_buffer.getvalue())
+    return zip_buffer
+
+########
+
+# Consulta para obtener la media de la cantidad de producto vendido y el total por día de la semana, desglosado por producto
+query_cantidad_total_por_dia_semana_producto = '''
+    SELECT f.dia_semana AS dia_semana,
+           p.nombre AS nombre_producto,
+           AVG(hv.cantidad) AS promedio_cantidad_vendida,
+           SUM(hv.total) AS total_ventas_dia
+    FROM Hechos_Ventas hv
+    JOIN Dim_Fecha f ON hv.id_fecha = f.id_fecha
+    JOIN Dim_Productos p ON hv.id_producto = p.id_producto
+    GROUP BY f.dia_semana, p.nombre
+    ORDER BY 
+        CASE 
+            WHEN f.dia_semana = 'Lunes' THEN 1
+            WHEN f.dia_semana = 'Martes' THEN 2
+            WHEN f.dia_semana = 'Miércoles' THEN 3
+            WHEN f.dia_semana = 'Jueves' THEN 4
+            WHEN f.dia_semana = 'Viernes' THEN 5
+            WHEN f.dia_semana = 'Sábado' THEN 6
+            WHEN f.dia_semana = 'Domingo' THEN 7
+        END, p.nombre
+'''
+
+# Ejecutar la consulta y cargar los datos en un DataFrame
+df_ventas_dia_semana_producto = obtener_datos(query_cantidad_total_por_dia_semana_producto)
+
+# Visualización en Streamlit
+st.title('Análisis de Ventas por Día de la Semana y Producto')
+
+# Mostrar la tabla con la media de la cantidad de producto vendido y el total por día de la semana
+st.subheader('Media de la Cantidad de Producto Vendido y Total por Día de la Semana, Desglosado por Producto')
+st.write(df_ventas_dia_semana_producto)
+
+# Gráfica de la media de la cantidad de producto vendido por día de la semana, desglosado por producto
+st.subheader('Media de Cantidad de Producto Vendido por Día de la Semana y Producto')
+
+# Usamos un gráfico de barras apiladas para mostrar los productos y sus cantidades vendidas por día
+st.bar_chart(df_ventas_dia_semana_producto.pivot_table(index='dia_semana', columns='nombre_producto', values='promedio_cantidad_vendida'))
+
+# Gráfica del total de ventas por día de la semana, desglosado por producto
+st.subheader('Total de Ventas por Día de la Semana y Producto')
+
+# Gráfico de barras apiladas para mostrar el total de ventas por producto y día de la semana
+st.bar_chart(df_ventas_dia_semana_producto.pivot_table(index='dia_semana', columns='nombre_producto', values='total_ventas_dia'))
+
+##############3
 
 # Consulta para obtener el total de ventas por mes
 query_ventas_mes = '''
@@ -152,6 +211,9 @@ if reporte_seleccionado == 'Univariados':
 
         # Mostrar el gráfico en Streamlit
         st.plotly_chart(fig)
+        
+    
+        
 elif reporte_seleccionado == 'Bivariados':
     st.header('Reportes Bivariados')
     #reporte 1
