@@ -2,34 +2,53 @@ import streamlit as st
 import pandas as pd
 import psycopg2
 from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+import xgboost as xgb
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import plotly.express as px
+import random
 
-# Conexión a PostgreSQL
-@st.cache_resource
+# Conexión a PostgreSQL sin usar caché
 def conectar_base_datos():
-    return psycopg2.connect(
-        dbname="dpanchita2",
-        user="postgres",
-        password="123456",
-        host="localhost",
-        port="5432"
-    )
+    try:
+        conn = psycopg2.connect(
+            dbname="dpanchita2",
+            user="postgres",
+            password="123456",
+            host="localhost",
+            port="5432"
+        )
+        return conn
+    except Exception as e:
+        st.error(f"Error al conectar a la base de datos: {e}")
+        return None
 
 # Cargar datos de PostgreSQL
-@st.cache_data
 def cargar_datos():
     conn = conectar_base_datos()
-    query = "SELECT id_sucursal, id_producto, fecha, cantidad FROM Hechos_Ventas;"
-    datos = pd.read_sql(query, conn)
-    conn.close()
-    return datos
+    if conn is None:
+        return pd.DataFrame()  # Si la conexión falla, devolver un DataFrame vacío
+    try:
+        query = """
+        SELECT id_sucursal, id_producto, id_fecha, cantidad, id_fecha::date as fecha 
+        FROM Hechos_Ventas;
+        """
+        datos = pd.read_sql(query, conn)
+        return datos
+    except Exception as e:
+        st.error(f"Error al ejecutar la consulta: {e}")
+        return pd.DataFrame()  # En caso de error en la consulta, devolver un DataFrame vacío
+    finally:
+        conn.close()  # Asegurarse de cerrar la conexión después de la consulta
 
 # Mostrar los datos
 st.title("Predicción de Cantidad de Productos Vendidos")
 datos = cargar_datos()
-st.write("Vista previa de los datos:", datos.head())
+if datos.empty:
+    st.warning("No se pudieron cargar los datos.")
+else:
+    st.write("Vista previa de los datos:", datos.head())
 
 # Preprocesamiento de los datos
 st.subheader("Preparación de los Datos")
@@ -51,38 +70,75 @@ X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_
 st.write(f"Datos de entrenamiento: {X_train.shape[0]} filas")
 st.write(f"Datos de prueba: {X_test.shape[0]} filas")
 
-# Entrenar el modelo: Random Forest
-st.subheader("Entrenando el Modelo")
-modelo_rf = RandomForestRegressor(n_estimators=100, random_state=42)
-modelo_rf.fit(X_train, y_train)
+# Modelos disponibles
+modelos = {
+    "Regresión Lineal": LinearRegression(),
+    "Random Forest": RandomForestRegressor(n_estimators=100, random_state=42),
+    "Gradient Boosting": GradientBoostingRegressor(random_state=42),
+    "XGBoost": xgb.XGBRegressor(random_state=42)
+}
 
-# Predicciones
-predicciones_rf = modelo_rf.predict(X_test)
+# Entrenar todos los modelos
+resultados_modelos = {}
+for nombre, modelo in modelos.items():
+    modelo.fit(X_train, y_train)
+    predicciones = modelo.predict(X_test)
+    mae = mean_absolute_error(y_test, predicciones)
+    mse = mean_squared_error(y_test, predicciones)
+    r2 = r2_score(y_test, predicciones)
+    resultados_modelos[nombre] = {
+        "modelo": modelo,
+        "predicciones": predicciones,
+        "mae": mae,
+        "mse": mse,
+        "r2": r2
+    }
 
-# Evaluación del modelo
-mae = mean_absolute_error(y_test, predicciones_rf)
-mse = mean_squared_error(y_test, predicciones_rf)
-r2 = r2_score(y_test, predicciones_rf)
+# Mostrar resultados de todos los modelos
+st.subheader("Resultados de los Modelos")
+for nombre, resultado in resultados_modelos.items():
+    st.write(f"Modelo: {nombre}")
+    st.write(f"MAE: {resultado['mae']:.2f}")
+    st.write(f"MSE: {resultado['mse']:.2f}")
+    st.write(f"R²: {resultado['r2']:.2f}")
+    st.write("---")
 
-st.write("Resultados del Modelo:")
-st.write(f"MAE (Error Absoluto Medio): {mae}")
-st.write(f"MSE (Error Cuadrático Medio): {mse}")
-st.write(f"R² (Coeficiente de Determinación): {r2}")
+# Selección de modelos a comparar
+st.subheader("Selecciona los Modelos para Comparar")
+modelos_seleccionados = st.multiselect(
+    "Selecciona los modelos que deseas comparar con los valores reales",
+    options=list(resultados_modelos.keys()),
+    default=list(resultados_modelos.keys())  # Todos los modelos seleccionados por defecto
+)
 
-# Visualización: Predicciones vs Valores Reales
-st.subheader("Comparación: Predicciones vs Valores Reales")
+# Crear el DataFrame de comparación
 comparacion = pd.DataFrame({
-    "Valores Reales": y_test,
-    "Predicciones": predicciones_rf
+    "Valores Reales": y_test
 }).reset_index(drop=True)
 
-# Gráfico interactivo de predicciones vs reales
+# Agregar las predicciones de los modelos seleccionados al DataFrame
+for modelo_seleccionado in modelos_seleccionados:
+    comparacion[modelo_seleccionado] = resultados_modelos[modelo_seleccionado]["predicciones"]
+
+# Asignar colores únicos para cada modelo seleccionado
+colores = ["blue", "red", "green", "purple", "orange", "brown", "pink", "cyan"]
+colores_modelos = {modelo: random.choice(colores) for modelo in modelos_seleccionados}
+
+# Gráfico interactivo de puntos (scatter plot)
 fig = px.scatter(comparacion, 
                  x=comparacion.index, 
-                 y=["Valores Reales", "Predicciones"], 
-                 labels={"index": "Índice", "value": "Cantidad", "variable": "Tipo de Valor"},
-                 title="Comparación de Cantidades Reales vs Predicciones",
-                 color_discrete_sequence=["blue", "red"])
+                 y="Valores Reales", 
+                 labels={"index": "Índice", "Valores Reales": "Cantidad"},
+                 title="Comparación de Cantidades Reales vs Predicciones", 
+                 template="plotly_dark")
+
+# Agregar las predicciones al gráfico con colores únicos
+for modelo_seleccionado in modelos_seleccionados:
+    fig.add_scatter(x=comparacion.index, 
+                    y=comparacion[modelo_seleccionado], 
+                    mode="markers", 
+                    name=f"Predicciones {modelo_seleccionado}", 
+                    marker=dict(color=colores_modelos[modelo_seleccionado]))
 
 # Mostrar gráfico
 st.plotly_chart(fig)
@@ -110,7 +166,10 @@ entrada = pd.DataFrame({
     'día_semana': [día_semana_input]
 })
 
-# Realizar la predicción
-prediccion_cantidad = modelo_rf.predict(entrada)
+# Realizar la predicción con cada modelo seleccionado
+for nombre, resultado in resultados_modelos.items():
+    prediccion_cantidad = resultado["modelo"].predict(entrada)
+    st.write(f"Predicción con {nombre}: {prediccion_cantidad[0]:.2f}")
 
-st.write(f"La predicción de la cantidad de productos vendidos es: {prediccion_cantidad[0]:.2f}")
+
+
